@@ -112,8 +112,19 @@ parser.add_argument(
 parser.add_argument(
     "--policy_checkpoint_path",
     type=str,
-    required=True,
-    help="Path to the local LeRobot checkpoint.",
+    default=None,
+    help="Path to the local LeRobot checkpoint. Required unless --validate_only.",
+)
+parser.add_argument(
+    "--validate_only",
+    action="store_true",
+    help=(
+        "Dry-load mode: resolve + register the --task, build its env cfg, "
+        "run a single env.reset(), then exit 0 WITHOUT loading a policy or "
+        "running any episodes. Used by the backend to confirm an uploaded "
+        "task-config actually imports + builds inside Isaac Sim. Prints "
+        "'[validate] task load OK' on success."
+    ),
 )
 parser.add_argument(
     "--debug_policy_shapes",
@@ -916,6 +927,27 @@ def main():
     print("[rollout] resetting environment...", flush=True)
     obs_dict, _ = env.reset()
     print("[rollout] env.reset() returned", flush=True)
+
+    # ── validate-only dry-load ──────────────────────────────────────
+    # The task imported, registered, built its env cfg, and reset cleanly.
+    # That's everything the backend needs to certify the config "loads in
+    # Isaac Sim". Print a stable success marker and exit before touching
+    # any policy / checkpoint (validate mode runs with no checkpoint).
+    if args_cli.validate_only:
+        cam_keys = list(obs_dict.get("policy", {}).keys()) if isinstance(obs_dict, dict) else []
+        print(f"[validate] obs keys = {cam_keys}", flush=True)
+        print("[validate] task load OK", flush=True)
+        try:
+            env.close()
+        except Exception:
+            pass
+        simulation_app.close()
+        return
+
+    # Normal eval mode needs a checkpoint. (Declared optional at the
+    # argparse layer so --validate_only can omit it; enforced here.)
+    if not args_cli.policy_checkpoint_path:
+        raise SystemExit("--policy_checkpoint_path is required unless --validate_only is set")
 
     language_instruction = args_cli.policy_language_instruction
     if language_instruction is None:
