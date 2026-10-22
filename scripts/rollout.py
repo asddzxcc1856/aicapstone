@@ -179,7 +179,6 @@ from lerobot.policies.utils import populate_queues
 from lerobot.utils.constants import ACTION, OBS_IMAGES
 
 from leisaac.utils.env_utils import (
-    dynamic_reset_gripper_effort_limit_sim,
     get_task_type,
 )
 from leisaac.utils.robot_utils import (
@@ -216,7 +215,7 @@ def setup_dual_viewports():
 
     v2_api = vp_util.get_viewport_from_window_name("Viewport 2")
     if v2_api:
-        v2_api.camera_path = f"/World/front_camera"
+        v2_api.camera_path = "/World/envs/env_0/front_camera"
 
     # Ensure both windows exist before docking
     if v1_window and v2_window:
@@ -267,12 +266,26 @@ class _EvalVideoRecorder:
         self.frames_written = 0
         self._broken = False
 
+    @staticmethod
+    def _ffmpeg_exe() -> str:
+        # The worker image has no system ffmpeg; imageio-ffmpeg (pulled in by
+        # lerobot) ships a static binary with libx264.
+        import shutil as _sh
+        exe = _sh.which("ffmpeg")
+        if exe:
+            return exe
+        try:
+            import imageio_ffmpeg
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            return "ffmpeg"
+
     def _spawn(self, width: int, height: int) -> None:
         import subprocess as _sp
         self.width, self.height = width, height
         os.makedirs(os.path.dirname(self.out_path) or ".", exist_ok=True)
         cmd = [
-            "ffmpeg", "-y",
+            self._ffmpeg_exe(), "-y",
             "-hide_banner", "-loglevel", "warning",
             "-f", "rawvideo",
             "-pix_fmt", "rgb24",
@@ -902,8 +915,7 @@ def main():
     task_type = get_task_type(task_id)
     robot_name = getattr(env_cfg, "robot_name", None)
     policy_task_type = "franka_panda" if robot_name == "franka_panda" else task_type
-    teleop_device = "keyboard" if policy_task_type == "franka_panda" else task_type
-    env_cfg.use_teleop_device(teleop_device)
+    env_cfg.use_joint_position_actions()
     env_cfg.seed = args_cli.seed if args_cli.seed is not None else int(time.time())
     env_cfg.episode_length_s = args_cli.episode_length_s
 
@@ -1108,8 +1120,6 @@ def main():
                     min(args_cli.policy_action_horizon, actions.shape[0])
                 ):
                     action = actions[action_index, :, :]
-                    if env.cfg.dynamic_reset_gripper_effort_limit:
-                        dynamic_reset_gripper_effort_limit_sim(env, teleop_device)
                     obs_dict, _, reset_terminated, reset_time_outs, _ = env.step(action)
                     sim_step_counter += 1
                     if recorder and sim_step_counter % capture_stride == 0:

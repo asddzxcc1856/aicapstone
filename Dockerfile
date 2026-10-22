@@ -125,7 +125,8 @@ RUN python -m pip install --upgrade \
         toml==0.10.2 \
         packaging==24.2
 
-RUN printf "numpy==1.26.0\n" > /tmp/sim-constraints.txt \
+# Newer pyarrow (e.g. 26) requires NumPy 2; Isaac Sim needs numpy 1.26, and datasets (LeRobot) needs pyarrow>=21.
+RUN printf "numpy==1.26.0\npyarrow==21.0.0\n" > /tmp/sim-constraints.txt \
     && python -m pip install --use-deprecated=legacy-resolver \
         --no-build-isolation \
         -c /tmp/sim-constraints.txt \
@@ -135,6 +136,17 @@ RUN printf "numpy==1.26.0\n" > /tmp/sim-constraints.txt \
 
 RUN python -m pip install --upgrade pip==26.0.1 \
     && python -m pip install --no-deps numpy==1.26.0
+
+# The simulator install can drag in cuda-bindings[all] → cuda-toolkit 13 and the
+# CUDA 13 nvidia-* wheels. They share nvidia/<lib>/lib with torch's cu12 wheels and
+# overwrite them (torch then loads cuDNN 9.24/cu13 → CUDNN_STATUS_NOT_INITIALIZED on
+# 535.x drivers). Drop the CUDA 13 set and force-reinstall the cu12 wheels torch needs.
+RUN CU13=$(python -m pip list --format=freeze 2>/dev/null | cut -d= -f1 \
+        | grep -E '^(cuda-toolkit|cuda-bindings|cuda-pathfinder|nvidia-[a-z-]+-cu13|nvidia-(cublas|cuda-cupti|cuda-nvrtc|cuda-runtime|cufft|cufile|curand|cusolver|cusparse|nvjitlink|nvtx))$' || true) \
+    && if [ -n "$CU13" ]; then python -m pip uninstall -y $CU13; fi \
+    && python -m pip install --no-deps --force-reinstall \
+        $(python -m pip list --format=freeze 2>/dev/null | grep -E '^nvidia-.*-cu12==') \
+    && python -c "import torch; assert torch.backends.cudnn.version() < 90800, torch.backends.cudnn.version()"
 
 # ── Sidecar venv for lerobot >=0.5.1 policies (multi_task_dit, etc.) ─────────
 # isaacsim 5.1 pins Python ==3.11 and lerobot 0.5.1 pins Python >=3.12, so

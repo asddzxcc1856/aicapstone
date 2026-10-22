@@ -9,10 +9,11 @@ from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.sim.schemas import MassPropertiesCfg
 from isaaclab.utils import configclass
 
+from leisaac.utils.domain_randomization import domain_randomization
 from leisaac.utils.general_assets import parse_usd_and_create_subassets
 from simulator import ASSETS_ROOT
-from simulator.utils.object_poses_loader import ObjectPoseConfig
 from simulator.assets.scenes.living_room import LIVING_ROOM_CFG, LIVING_ROOM_USD_PATH
+from simulator.utils.domain_randomization import randomize_light_conditions, randomize_objects_apart
 
 from simulator.tasks.template.single_arm_franka_cfg import (
     SingleArmFrankaObservationsCfg,
@@ -23,21 +24,16 @@ from simulator.tasks.template.single_arm_franka_cfg import (
 
 LIVING_OBJECTS_ROOT = ASSETS_ROOT / "scenes" / "living_room" / "objects"
 
-TAG_TO_OBJECT: dict[int, str] = {1: "green_block", 2: "blue_block", 3: "red_block"}
-ANCHOR_TAG_ID: int = 0
-ANCHOR_WORLD_POSE: tuple[float, float, float] = (0.35, 0.0, 0.0)
-OBJECT_Z: float = 0.05
-OBJECT_ROLL: float = 0.0
-OBJECT_PITCH: float = 0.0
-# Per-USD yaw correction (rad) so the spawned object matches its visual heading
-# under the gripper's coordinate convention. Tag-to-mesh alignment differs per
-# asset; tune until ``data.root_quat_w`` matches what you see in the viewport.
-PER_OBJECT_YAW_OFFSET: dict[str, float] = {
-    "green_block": math.pi / 2.0,
-    "blue_block": math.pi / 2.0,
-    "red_block": math.pi / 2.0,
-}
+# kujiale table_0000 (self-contained; surface convexHull collider). Origin at the
+# table's vertical center, so z=0.183 sits the top near ~0.364.
+TABLE_USD = str(ASSETS_ROOT / "scenes" / "table_0000" / "table_0000.usd")
+TABLE_WORLD_POS: tuple[float, float, float] = (3.3, 1.1, 0.183)
 
+
+# Storage box: 0.36348 (SDF mesh, can't convex hull, object will float on top of the box)
+# Cylinder: 0.3849  => turn the mesh from bounding box to convex hull
+# triangle: 0.38157 => turn the mesh from bounding box to convex hull
+# bridge: 0.39425 => turn the mesh from bounding box to convex hull (original make it collider with tilted)
 
 @configclass
 class ToyBlocksCollectionSceneCfg(SingleArmFrankaTaskSceneCfg):
@@ -45,11 +41,22 @@ class ToyBlocksCollectionSceneCfg(SingleArmFrankaTaskSceneCfg):
 
     scene: AssetBaseCfg = LIVING_ROOM_CFG.replace(prim_path="{ENV_REGEX_NS}/Scene")
 
+    # Static table (no rigid body). Surface collider is convexHull -> objects rest flush.
+    table: AssetBaseCfg = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Scene/table",
+        init_state=AssetBaseCfg.InitialStateCfg(pos=TABLE_WORLD_POS),
+        spawn=sim_utils.UsdFileCfg(usd_path=TABLE_USD),
+    )
+
     green_block: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Scene/green_block",
         spawn=sim_utils.UsdFileCfg(
             usd_path=str(LIVING_OBJECTS_ROOT / "Bridge" / "Bridge.usd"),
             mass_props=MassPropertiesCfg(mass=0.1),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=(3.25, 0.95, 0.45),
+            rot=(0.707, 0.0, 0.0, 0.707),
         ),
     )
 
@@ -59,6 +66,10 @@ class ToyBlocksCollectionSceneCfg(SingleArmFrankaTaskSceneCfg):
             usd_path=str(LIVING_OBJECTS_ROOT / "Cylinder" / "Cylinder.usd"),
             mass_props=MassPropertiesCfg(mass=0.1),
         ),
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=(3.4, 0.8, 0.45),
+            rot=(0.707, 0.0, 0.0, 0.707),
+        ),
     )
 
     red_block: RigidObjectCfg = RigidObjectCfg(
@@ -67,12 +78,16 @@ class ToyBlocksCollectionSceneCfg(SingleArmFrankaTaskSceneCfg):
             usd_path=str(LIVING_OBJECTS_ROOT / "Triangle" / "Triangle.usd"),
             mass_props=MassPropertiesCfg(mass=0.1),
         ),
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=(3.5, 0.9, 0.45),
+            rot=(0.26788, -0.2733, 0.65215, 0.65441),
+        ),
     )
 
     storage_box: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Scene/storage_box",
         init_state=RigidObjectCfg.InitialStateCfg(
-            pos=(0.65, -0.55, 0.05),
+            pos=(3.0, 0.8, 0.36348),
             rot=(1.0, 0.0, 0.0, 0.0),
         ),
         spawn=sim_utils.UsdFileCfg(
@@ -142,16 +157,24 @@ class ToyBlocksCollectionEnvCfg(SingleArmFrankaTaskEnvCfg):
     observations: SingleArmFrankaObservationsCfg = SingleArmFrankaObservationsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     task_description: str = "pick up the toys and place them into the storage box."
+    tracked_object_names: list[str] = ["green_block", "blue_block", "red_block", "storage_box"]
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        self.episode_length_s = 60  # graded episode length for this task
 
         self.viewer.eye = (0.8, 0.87, 0.67)
         self.viewer.lookat = (0.4, -1.3, -0.2)
         self.dynamic_reset_gripper_effort_limit = False
 
-        self.scene.robot.init_state.pos = (0.35, -0.74, 0.01)
+        self.scene.robot.init_state.pos = (3.3, 0.35, 0.28)
         self.scene.robot.init_state.rot = (0.707, 0.0, 0.0, 0.707)
+
+        self.scene.front.offset.pos = (3.3, 2.55, 1.1)
+        self.scene.front.offset.rot = (0.0, 0.0, -0.58292, -0.81253)
+        self.scene.front.offset.convention = "opengl"
+        self.scene.front.spawn.focal_length = 55
+
         self.scene.robot.init_state.joint_pos = {
             "panda_joint1": 0.0,
             "panda_joint2": -math.pi / 4.0,
@@ -166,13 +189,30 @@ class ToyBlocksCollectionEnvCfg(SingleArmFrankaTaskEnvCfg):
 
         parse_usd_and_create_subassets(LIVING_ROOM_USD_PATH, self)
 
-        self.object_pose_cfg = ObjectPoseConfig(
-            tag_to_object=TAG_TO_OBJECT,
-            anchor_tag_id=ANCHOR_TAG_ID,
-            anchor_world_pose=ANCHOR_WORLD_POSE,
-            object_z=OBJECT_Z,
-            object_roll=OBJECT_ROLL,
-            object_pitch=OBJECT_PITCH,
-            per_object_yaw_offset=PER_OBJECT_YAW_OFFSET,
-            use_fixed_yaw=True,
+        domain_randomization(
+            self,
+            random_options=[
+                # Resample when two blocks land closer than 8 cm (they would overlap).
+                randomize_objects_apart(
+                    pose_ranges={
+                        "green_block": {
+                            "x": (-0.05, 0.05),
+                            "y": (-0.05, 0.05),
+                            "z": (0.0, 0.0),
+                        },
+                        "blue_block": {
+                            "x": (-0.05, 0.05),
+                            "y": (-0.05, 0.05),
+                            "z": (0.0, 0.0),
+                        },
+                        "red_block": {
+                            "x": (-0.05, 0.05),
+                            "y": (-0.05, 0.05),
+                            "z": (0.0, 0.0),
+                        },
+                    },
+                    min_distance=0.08,
+                ),
+                randomize_light_conditions("light", textures=[], intensity_range=(1100, 1300)),
+            ],
         )

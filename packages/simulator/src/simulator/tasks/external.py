@@ -7,8 +7,6 @@ Accepts three input forms and returns a registered ``gymnasium`` task id:
 3. A ``module:Class`` reference whose import side-effect registers the task,
    or whose ``module:Class`` string equals an existing task's
    ``env_cfg_entry_point``.
-
-See ``AUT-80`` for the design rationale.
 """
 
 from __future__ import annotations
@@ -92,7 +90,7 @@ def _load_from_file(path: Path) -> str:
     if parent not in sys.path:
         sys.path.insert(0, parent)
 
-    mod_name = f"_aicapstone_external_task_{uuid.uuid4().hex}"
+    mod_name = f"_physicalai_external_task_{uuid.uuid4().hex}"
     spec_obj = importlib.util.spec_from_file_location(mod_name, path)
     if spec_obj is None or spec_obj.loader is None:
         raise RuntimeError(f"Could not build import spec for '{path}'")

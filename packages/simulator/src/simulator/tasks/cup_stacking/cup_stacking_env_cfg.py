@@ -10,9 +10,10 @@ from isaaclab.sim.schemas import MassPropertiesCfg
 from isaaclab.utils import configclass
 
 from leisaac.utils.general_assets import parse_usd_and_create_subassets
+from leisaac.utils.domain_randomization import domain_randomization
 from simulator import ASSETS_ROOT
-from simulator.utils.object_poses_loader import ObjectPoseConfig
 from simulator.assets.scenes.kitchen import KITCHEN_CFG, KITCHEN_USD_PATH
+from simulator.utils.domain_randomization import randomize_light_conditions, randomize_objects_apart
 
 from simulator.tasks.template.single_arm_franka_cfg import (
     SingleArmFrankaObservationsCfg,
@@ -22,13 +23,6 @@ from simulator.tasks.template.single_arm_franka_cfg import (
 )
 
 KITCHEN_OBJECTS_ROOT = ASSETS_ROOT / "scenes" / "kitchen" / "objects"
-
-TAG_TO_OBJECT: dict[int, str] = {1: "blue_cup", 2: "pink_cup"}
-ANCHOR_TAG_ID: int = 0
-ANCHOR_WORLD_POSE: tuple[float, float, float] = (0.5, -0.2, 0.0)
-OBJECT_Z: float = 0.12
-OBJECT_ROLL: float = 0.0
-OBJECT_PITCH: float = 0.0
 
 
 @configclass
@@ -42,6 +36,7 @@ class CupStackingSceneCfg(SingleArmFrankaTaskSceneCfg):
             usd_path=str(KITCHEN_OBJECTS_ROOT / "BlueCup" / "BlueCup.usd"),
             mass_props=MassPropertiesCfg(mass=0.1),
         ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(8.95, 6.52, 1.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
 
     pink_cup: RigidObjectCfg = RigidObjectCfg(
@@ -50,6 +45,7 @@ class CupStackingSceneCfg(SingleArmFrankaTaskSceneCfg):
             usd_path=str(KITCHEN_OBJECTS_ROOT / "PinkCup" / "PinkCup.usd"),
             mass_props=MassPropertiesCfg(mass=0.1),
         ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(9.07, 6.43, 1.0), rot=(1.0, 0.0, 0.0, 0.0)),
     )
 
 
@@ -101,16 +97,33 @@ class CupStackingEnvCfg(SingleArmFrankaTaskEnvCfg):
     observations: SingleArmFrankaObservationsCfg = SingleArmFrankaObservationsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     task_description: str = "pick up the blue cup and place it on the pink cup."
+    tracked_object_names: list[str] = ["blue_cup", "pink_cup"]
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        self.episode_length_s = 20  # graded episode length for this task
 
         self.viewer.eye = (0.8, 0.87, 0.67)
         self.viewer.lookat = (0.4, -1.3, -0.2)
         self.dynamic_reset_gripper_effort_limit = False
 
-        self.scene.robot.init_state.pos = (0.35, -0.74, 0.01)
+        self.scene.robot.init_state.pos = (9.0, 6.0, 0.9)
         self.scene.robot.init_state.rot = (0.707, 0.0, 0.0, 0.707)
+
+        # Per-task front camera: pos (7.2,6.2,1.45), aimed at (9,6.45,1.05)
+        # over the cup spawn. rot is that look-at as an opengl quaternion
+        # (w,x,y,z).
+        # The other two tasks put the camera on the far side of the objects
+        # looking back at the arm; the kitchen has no room for that -- the arm
+        # faces +y into the backsplash (wall at y~6.8) and wall cabinets close
+        # in above z~1.3 from x~8.0 on -- so this is a raised three-quarter
+        # view from the arm's left, clearing the cabinets and framing the whole
+        # +-0.15 m cup jitter box with the arm entering from frame right.
+        self.scene.front.offset.pos = (7.80362, 6.78599, 1.1197)
+        self.scene.front.offset.rot = (0.37025, 0.37025, -0.60242, -0.60242)
+        self.scene.front.offset.convention = "opengl"
+        self.scene.front.spawn.focal_length = 18.14756
+
         self.scene.robot.init_state.joint_pos = {
             "panda_joint1": 0.0,
             "panda_joint2": -math.pi / 4.0,
@@ -125,11 +138,25 @@ class CupStackingEnvCfg(SingleArmFrankaTaskEnvCfg):
 
         parse_usd_and_create_subassets(KITCHEN_USD_PATH, self)
 
-        self.object_pose_cfg = ObjectPoseConfig(
-            tag_to_object=TAG_TO_OBJECT,
-            anchor_tag_id=ANCHOR_TAG_ID,
-            anchor_world_pose=ANCHOR_WORLD_POSE,
-            object_z=OBJECT_Z,
-            object_roll=OBJECT_ROLL,
-            object_pitch=OBJECT_PITCH,
+        domain_randomization(
+            self,
+            random_options=[
+                # Resample when the cups land closer than 11 cm (they would overlap).
+                randomize_objects_apart(
+                    pose_ranges={
+                        "blue_cup": {
+                            "x": (-0.05, 0.05),
+                            "y": (-0.05, 0.05),
+                            "z": (0.0, 0.0),
+                        },
+                        "pink_cup": {
+                            "x": (0.02, 0.05),
+                            "y": (0.02, 0.05),
+                            "z": (0.0, 0.0),
+                        },
+                    },
+                    min_distance=0.11,
+                ),
+                randomize_light_conditions("light", textures=[], intensity_range=(1100, 1300)),
+            ],
         )
